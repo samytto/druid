@@ -1,5 +1,8 @@
 package io.druid.segment;
 
+import io.druid.segment.data.ObjectStrategy;
+
+import org.roaringbitmap.buffer.ImmutableRoaringBitmap;
 import org.roaringbitmap.buffer.MutableRoaringBitmap;
 
 public class MutableRoaring implements MutableBitmap {
@@ -17,8 +20,6 @@ public class MutableRoaring implements MutableBitmap {
 
 	@Override
 	public ImmutableBitmap toNewImmutableFromMutable() {
-		// TODO Auto-generated method stub
-		return null;
+		return new ImmutableRoaring((ImmutableRoaringBitmap)roaring);
 	}
-
 }
