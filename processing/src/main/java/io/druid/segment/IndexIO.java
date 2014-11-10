@@ -155,10 +155,31 @@ public class IndexIO
     init();
     return handler.mapDir(inDir);
   }
+  
+  @Deprecated
+  public static MMappedIndex mapDir(final File inDir, ImmutableBitmap bitmap) throws IOException
+  {
+    init(bitmap);
+    return handler.mapDir(inDir);
+  }
 
   public static QueryableIndex loadIndex(File inDir) throws IOException
   {
     init();
+    final int version = SegmentUtils.getVersionFromDir(inDir);
+
+    final IndexLoader loader = indexLoaders.get(version);
+
+    if (loader != null) {
+      return loader.load(inDir);
+    } else {
+      throw new ISE("Unknown index version[%s]", version);
+    }
+  }
+  
+  public static QueryableIndex loadIndex(File inDir, ImmutableBitmap bitmap) throws IOException
+  {
+    init(bitmap);
     final int version = SegmentUtils.getVersionFromDir(inDir);
 
     final IndexLoader loader = indexLoaders.get(version);
@@ -260,13 +281,17 @@ public class IndexIO
   public static class DefaultIndexIOHandler implements IndexIOHandler
   {
     private static final Logger log = new Logger(DefaultIndexIOHandler.class);
-    private ImmutableBitmap immutableBitmap = new ImmutableConcise();
+    private ImmutableBitmap immutableBitmap;
     
     public DefaultIndexIOHandler(ImmutableBitmap bitmap) {
     	this.immutableBitmap = bitmap;
     }
     
-    public ImmutableBitmap getImmutableBitmap(){
+    public DefaultIndexIOHandler() {		
+    	this.immutableBitmap = new ImmutableConcise();
+    }
+
+	public ImmutableBitmap getImmutableBitmap(){
     	return this.immutableBitmap;
     }
 
