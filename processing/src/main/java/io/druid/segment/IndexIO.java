@@ -260,10 +260,14 @@ public class IndexIO
   public static class DefaultIndexIOHandler implements IndexIOHandler
   {
     private static final Logger log = new Logger(DefaultIndexIOHandler.class);
-    ImmutableBitmap immutableBitmap = new ImmutableConcise();
+    private ImmutableBitmap immutableBitmap = new ImmutableConcise();
     
     public DefaultIndexIOHandler(ImmutableBitmap bitmap) {
     	this.immutableBitmap = bitmap;
+    }
+    
+    public ImmutableBitmap getImmutableBitmap(){
+    	return this.immutableBitmap;
     }
 
     @Override
@@ -364,7 +368,7 @@ public class IndexIO
       return retVal;
     }
 
-    public void convertV8toV9(File v8Dir, File v9Dir) throws IOException
+    public static void convertV8toV9(File v8Dir, File v9Dir, ImmutableBitmap immutableBitmap) throws IOException
     {
       log.info("Converting v8[%s] to v9[%s]", v8Dir, v9Dir);
 
