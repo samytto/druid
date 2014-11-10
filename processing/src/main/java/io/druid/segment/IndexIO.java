@@ -44,6 +44,7 @@ import com.metamx.common.io.smoosh.SmooshedFileMapper;
 import com.metamx.common.io.smoosh.SmooshedWriter;
 import com.metamx.common.logger.Logger;
 import com.metamx.emitter.EmittingLogger;
+
 import io.druid.common.utils.SerializerUtils;
 import io.druid.guice.ConfigProvider;
 import io.druid.guice.GuiceInjectors;
@@ -59,6 +60,7 @@ import io.druid.segment.data.ByteBufferSerializer;
 import io.druid.segment.data.CompressedLongsIndexedSupplier;
 import io.druid.segment.data.ConciseCompressedIndexedInts;
 import io.druid.segment.data.GenericIndexed;
+import io.druid.segment.data.ImmutableConcise;
 import io.druid.segment.data.IndexedIterable;
 import io.druid.segment.data.IndexedRTree;
 import io.druid.segment.data.VSizeIndexed;
@@ -75,6 +77,7 @@ import io.druid.segment.serde.LongGenericColumnSupplier;
 import io.druid.segment.serde.SpatialIndexColumnPartSupplier;
 import it.uniroma3.mat.extendedset.intset.ConciseSet;
 import it.uniroma3.mat.extendedset.intset.ImmutableConciseSet;
+
 import org.joda.time.Interval;
 
 import java.io.ByteArrayOutputStream;
@@ -187,7 +190,14 @@ public class IndexIO
       handler = new DefaultIndexIOHandler();
     }
   }
-
+  
+  private static void init(ImmutableBitmap bitmap)
+  {
+    if (handler == null) {
+      handler = new DefaultIndexIOHandler(bitmap);
+    }
+  }
+  
   public static int getVersionFromDir(File inDir) throws IOException
   {
     File versionFile = new File(inDir, "version.bin");
@@ -250,6 +260,11 @@ public class IndexIO
   public static class DefaultIndexIOHandler implements IndexIOHandler
   {
     private static final Logger log = new Logger(DefaultIndexIOHandler.class);
+    ImmutableBitmap immutableBitmap = new ImmutableConcise();
+    
+    public DefaultIndexIOHandler(ImmutableBitmap bitmap) {
+    	this.immutableBitmap = bitmap;
+    }
 
     @Override
     public MMappedIndex mapDir(File inDir) throws IOException
@@ -298,7 +313,7 @@ public class IndexIO
 
       Map<String, GenericIndexed<String>> dimValueLookups = Maps.newHashMap();
       Map<String, VSizeIndexed> dimColumns = Maps.newHashMap();
-      Map<String, GenericIndexed<ImmutableConciseSet>> invertedIndexed = Maps.newHashMap();
+      Map<String, GenericIndexed<ImmutableBitmap>> invertedIndexed = Maps.newHashMap();
 
       for (String dimension : IndexedIterable.create(availableDimensions)) {
         ByteBuffer dimBuffer = smooshedFiles.mapFile(makeDimFile(inDir, dimension).getName());
@@ -318,7 +333,7 @@ public class IndexIO
       for (int i = 0; i < availableDimensions.size(); ++i) {
         invertedIndexed.put(
             serializerUtils.readString(invertedBuffer),
-            GenericIndexed.read(invertedBuffer, ConciseCompressedIndexedInts.objectStrategy)
+            GenericIndexed.read(invertedBuffer, immutableBitmap.getObjectStrategy())
         );
       }
 
@@ -349,7 +364,7 @@ public class IndexIO
       return retVal;
     }
 
-    public static void convertV8toV9(File v8Dir, File v9Dir) throws IOException
+    public void convertV8toV9(File v8Dir, File v9Dir) throws IOException
     {
       log.info("Converting v8[%s] to v9[%s]", v8Dir, v9Dir);
 
@@ -369,15 +384,15 @@ public class IndexIO
 
       v9Dir.mkdirs();
       final FileSmoosher v9Smoosher = new FileSmoosher(v9Dir);
-
+      
       ByteStreams.write(Ints.toByteArray(9), Files.newOutputStreamSupplier(new File(v9Dir, "version.bin")));
-      Map<String, GenericIndexed<ImmutableConciseSet>> bitmapIndexes = Maps.newHashMap();
+      Map<String, GenericIndexed<ImmutableBitmap>> bitmapIndexes = Maps.newHashMap();
 
       final ByteBuffer invertedBuffer = v8SmooshedFiles.mapFile("inverted.drd");
       while (invertedBuffer.hasRemaining()) {
         bitmapIndexes.put(
             serializerUtils.readString(invertedBuffer),
-            GenericIndexed.read(invertedBuffer, ConciseCompressedIndexedInts.objectStrategy)
+            GenericIndexed.read(invertedBuffer, immutableBitmap.getObjectStrategy())
         );
       }
 
@@ -422,11 +437,11 @@ public class IndexIO
 
           VSizeIndexedInts singleValCol = null;
           VSizeIndexed multiValCol = VSizeIndexed.readFromByteBuffer(dimBuffer.asReadOnlyBuffer());
-          GenericIndexed<ImmutableConciseSet> bitmaps = bitmapIndexes.get(dimension);
+          GenericIndexed<ImmutableBitmap> bitmaps = bitmapIndexes.get(dimension);
           ImmutableRTree spatialIndex = spatialIndexes.get(dimension);
 
           boolean onlyOneValue = true;
-          ConciseSet nullsSet = null;
+          MutableBitmap nullsSet = null;
           for (int i = 0; i < multiValCol.size(); ++i) {
             VSizeIndexedInts rowValue = multiValCol.get(i);
             if (!onlyOneValue) {
@@ -437,7 +452,7 @@ public class IndexIO
             }
             if (rowValue.size() == 0) {
               if (nullsSet == null) {
-                nullsSet = new ConciseSet();
+                nullsSet = immutableBitmap.getNewMutableBitmap();
               }
               nullsSet.add(i);
             }
@@ -448,7 +463,7 @@ public class IndexIO
             final boolean bumpedDictionary;
             if (nullsSet != null) {
               log.info("Dimension[%s] has null rows.", dimension);
-              final ImmutableConciseSet theNullSet = ImmutableConciseSet.newImmutableFromMutable(nullsSet);
+              final ImmutableBitmap theNullSet = nullsSet.toNewImmutableFromMutable();
 
               if (dictionary.get(0) != null) {
                 log.info("Dimension[%s] has no null value in the dictionary, expanding...", dimension);
@@ -463,16 +478,16 @@ public class IndexIO
 
                 bitmaps = GenericIndexed.fromIterable(
                     Iterables.concat(Arrays.asList(theNullSet), bitmaps),
-                    ConciseCompressedIndexedInts.objectStrategy
+                    immutableBitmap.getObjectStrategy()
                 );
               } else {
                 bumpedDictionary = false;
                 bitmaps = GenericIndexed.fromIterable(
                     Iterables.concat(
-                        Arrays.asList(ImmutableConciseSet.union(theNullSet, bitmaps.get(0))),
+                        Arrays.asList(immutableBitmap.union(theNullSet, bitmaps.get(0))),
                         Iterables.skip(bitmaps, 1)
                     ),
-                    ConciseCompressedIndexedInts.objectStrategy
+                    immutableBitmap.getObjectStrategy()
                 );
               }
             } else {
